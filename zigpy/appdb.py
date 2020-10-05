@@ -263,7 +263,9 @@ class PersistingListener:
                 device.status,
             )
             return
-        q = "INSERT OR REPLACE INTO devices (ieee, nwk, status) VALUES (?, ?, ?)"
+        q = """INSERT INTO devices (ieee, nwk, status) VALUES (?, ?, ?)
+               ON CONFLICT(ieee) DO UPDATE
+               SET nwk=excluded.nwk, status=excluded.status"""
         self.execute(q, (device.ieee, device.nwk, device.status))
         self._save_node_descriptor(device)
         if isinstance(device, zigpy.quirks.CustomDevice):
