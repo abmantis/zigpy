@@ -18,6 +18,62 @@ APS_REPLY_TIMEOUT_EXTENDED = 28
 LOGGER = logging.getLogger(__name__)
 
 
+PRESSY_PAIR_DEVICES = {
+    "lumi.sensor_magnet": {
+        "manufacturer": "LUMI",
+        "node_desc": {
+            "byte1": 2,
+            "byte2": 64,
+            "mac_capability_flags": 128,
+            "manufacturer_code": 4151,
+            "maximum_buffer_size": 127,
+            "maximum_incoming_transfer_size": 100,
+            "server_mask": 0,
+            "maximum_outgoing_transfer_size": 100,
+            "descriptor_capability_field": 0,
+        },
+        "endpoints": {
+            1: {
+                "profile_id": 260,
+                "device_type": 0x0104,
+                "in_clusters": [0x0000, 0x0003, 0xFFFF, 0x0019],
+                "out_clusters": [
+                    0x0000,
+                    0x0003,
+                    0x0004,
+                    0x0005,
+                    0x0006,
+                    0x0008,
+                    0x0019,
+                ],
+            }
+        },
+    },
+    "lumi.sensor_motion": {
+        "manufacturer": "LUMI",
+        "node_desc": {
+            "byte1": 2,
+            "byte2": 64,
+            "mac_capability_flags": 128,
+            "manufacturer_code": 4151,
+            "maximum_buffer_size": 127,
+            "maximum_incoming_transfer_size": 100,
+            "server_mask": 0,
+            "maximum_outgoing_transfer_size": 100,
+            "descriptor_capability_field": 0,
+        },
+        "endpoints": {
+            1: {
+                "profile_id": 260,
+                "device_type": 260,
+                "in_clusters": [0, 65535, 3, 25],
+                "out_clusters": [0, 3, 4, 5, 6, 8, 25],
+            }
+        },
+    },
+}
+
+
 class Status(enum.IntEnum):
     """The status of a Device"""
 
@@ -83,8 +139,9 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
     async def get_node_descriptor(self):
         self.info("Requesting 'Node Descriptor'")
         try:
+            # TODO: make this twice again (checking if it is a pushy device before doing the second time)
             status, _, node_desc = await self.zdo.Node_Desc_req(
-                self.nwk, tries=2, delay=1
+                self.nwk, tries=1, delay=1
             )
             if status == zdo.types.Status.SUCCESS:
                 self.node_desc = node_desc
@@ -99,11 +156,63 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
         if await self.get_node_descriptor():
             self._application.listener_event("node_descriptor_updated", self)
 
+    def _init_pressy_pair_device(self):
+        self.debug("Doing the voodoo setup for %s", self._model)
+        pressy_dev_reg = PRESSY_PAIR_DEVICES[self._model]
+        self.manufacturer = pressy_dev_reg["manufacturer"]
+
+        node_desc_reg = pressy_dev_reg["node_desc"]
+        self.node_desc.byte1 = node_desc_reg["byte1"]
+        self.node_desc.byte2 = node_desc_reg["byte2"]
+        self.node_desc.mac_capability_flags = node_desc_reg["mac_capability_flags"]
+        self.node_desc.manufacturer_code = node_desc_reg["manufacturer_code"]
+        self.node_desc.maximum_buffer_size = node_desc_reg["maximum_buffer_size"]
+        self.node_desc.maximum_incoming_transfer_size = node_desc_reg[
+            "maximum_incoming_transfer_size"
+        ]
+        self.node_desc.server_mask = node_desc_reg["server_mask"]
+        self.node_desc.maximum_outgoing_transfer_size = node_desc_reg[
+            "maximum_outgoing_transfer_size"
+        ]
+        self.node_desc.descriptor_capability_field = node_desc_reg[
+            "descriptor_capability_field"
+        ]
+
+        for epid, ep_reg in pressy_dev_reg["endpoints"].items():
+            self.add_endpoint(epid)
+
+            ep = self.endpoints[epid]
+            ep.profile_id = ep_reg["profile_id"]
+            ep.device_type = ep_reg["device_type"]
+
+            # TODO: not sure about this (copied from endpoint.initialize())
+            if ep.profile_id == 260:
+                ep.device_type = zigpy.profiles.zha.DeviceType(ep.device_type)
+            elif ep.profile_id == 49246:
+                ep.device_type = zigpy.profiles.zll.DeviceType(ep.device_type)
+
+            for cluster in ep_reg["in_clusters"]:
+                ep.add_input_cluster(cluster)
+            for cluster in ep_reg["out_clusters"]:
+                ep.add_output_cluster(cluster)
+
+        ep.status = Status.ZDO_INIT
+
+        self.status = Status.ENDPOINTS_INIT
+        self.initializing = False
+        self.skip_configuration = True
+        self._application.device_initialized(self)
+
     async def _initialize(self):
         if self.status == Status.NEW:
             if self._node_handle is None or self._node_handle.done():
                 self._node_handle = asyncio.ensure_future(self.get_node_descriptor())
             await self._node_handle
+
+            if self._model in PRESSY_PAIR_DEVICES:
+                self._init_pressy_pair_device()
+                return
+
             self.info("Discovering endpoints")
             try:
                 epr = await self.zdo.Active_EP_req(self.nwk, tries=3, delay=2)
@@ -234,6 +343,17 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
             )
             return
         except KeyError as e:
+            if src_ep == 1 and cluster == 0:
+                LOGGER.debug("Entering uncharted waters!!!")
+                ep = zigpy.endpoint.Endpoint(self, src_ep)
+                cl = zigpy.zcl.Cluster.from_id(ep, cluster, is_server=True)
+                hdr, args = cl.deserialize(message)
+                # cl.handle_message(hdr, args)
+                # m = cl.attributes[5][1]
+                if args[0][0].attrid == 5:
+                    self.model = args[0][0].value.value
+                    LOGGER.debug("Hello Mr Weird %s", self.model)
+
             LOGGER.debug(
                 (
                     "Ignoring message (%s) on cluster %d: "
