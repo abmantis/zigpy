@@ -519,13 +519,13 @@ async def test_device_rejoin(tmpdir):
     assert dev.endpoints[1].model == "Model"
 
     # device rejoins
-    dev.nwk = nwk
+    dev.nwk = nwk + 1
     with patch("zigpy.quirks.get_device", fake_get_device):
         app2.device_initialized(dev)
 
     app3 = await make_app(db)
     dev = app3.get_device(ieee)
-    assert dev.nwk == nwk
+    assert dev.nwk == nwk + 1
     assert dev.endpoints[1].device_type == profiles.zha.DeviceType.PUMP
     assert 0 in dev.endpoints[1].in_clusters
     assert dev.endpoints[1].manufacturer == "Custom"
