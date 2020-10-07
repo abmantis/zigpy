@@ -157,6 +157,7 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
             self._application.listener_event("node_descriptor_updated", self)
 
     def _init_pressy_pair_device(self):
+        # TODO: this code could be merged with the loading from DB somehow
         self.debug("Doing the voodoo setup for %s", self._model)
         pressy_dev_reg = PRESSY_PAIR_DEVICES[self._model]
         self.manufacturer = pressy_dev_reg["manufacturer"]
@@ -196,6 +197,10 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
             for cluster in ep_reg["out_clusters"]:
                 ep.add_output_cluster(cluster)
 
+        clus = self.endpoints[1].in_clusters[0]
+        clus._attr_cache[4] = self.manufacturer
+        clus._attr_cache[5] = self.model
+
         ep.status = Status.ZDO_INIT
 
         self.status = Status.ENDPOINTS_INIT
@@ -205,6 +210,12 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
 
     async def _initialize(self):
         if self.status == Status.NEW:
+            # TODO: the message takes a bit to arrive, but this is not a good way to wait
+            await asyncio.sleep(0.1)
+            if self._model in PRESSY_PAIR_DEVICES:
+                self._init_pressy_pair_device()
+                return
+
             if self._node_handle is None or self._node_handle.done():
                 self._node_handle = asyncio.ensure_future(self.get_node_descriptor())
             await self._node_handle
